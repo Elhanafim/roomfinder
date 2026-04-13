@@ -9,7 +9,7 @@ import messageRoutes from "./routes/messages.js";
 
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_URL || "*" }));
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 app.use("/api/auth", authRoutes);
@@ -20,28 +20,27 @@ app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
 
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: "Internal server error" });
 });
 
-// Cache mongoose connection across serverless invocations
-let connected = false;
-async function connectDB() {
-  if (connected) return;
-  await mongoose.connect(process.env.MONGODB_URI);
-  connected = true;
+// Cache connection across serverless warm invocations
+let dbConnected = false;
+
+export default async function handler(req, res) {
+  if (!dbConnected) {
+    await mongoose.connect(process.env.MONGODB_URI);
+    dbConnected = true;
+  }
+  app(req, res);
 }
 
-// Vercel: wrap app to ensure DB is connected before handling requests
-const handler = async (req, res) => {
-  await connectDB();
-  app(req, res);
-};
-
-// Local dev: listen normally
+// Local dev
 if (process.env.NODE_ENV !== "production") {
-  connectDB()
+  mongoose
+    .connect(process.env.MONGODB_URI)
     .then(() => {
       const PORT = process.env.PORT || 5000;
       app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
@@ -51,5 +50,3 @@ if (process.env.NODE_ENV !== "production") {
       process.exit(1);
     });
 }
-
-export default handler;
