@@ -33,7 +33,8 @@ export async function register(req, res) {
       data: { name, email, password: hashed, role: role?.toUpperCase() || "TENANT" },
     });
     return sendAuthResponse(res, 201, user);
-  } catch {
+  } catch (err) {
+    console.error("register error:", err);
     return res.status(500).json({ message: "Server error" });
   }
 }
@@ -49,8 +50,9 @@ export async function login(req, res) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
     return sendAuthResponse(res, 200, user);
-  } catch {
-    return res.status(500).json({ message: "Server error" });
+  } catch (err) {
+    console.error("login error:", err);
+    return res.status(500).json({ message: err.message || "Server error" });
   }
 }
 
