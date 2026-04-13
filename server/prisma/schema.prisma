@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  TENANT
+  LANDLORD
+}
+
+enum ListingType {
+  ROOM
+  STUDIO
+  APARTMENT
+  HOUSE
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role     @default(TENANT)
+  avatar    String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listings         Listing[]
+  sentMessages     Message[] @relation("Sender")
+  receivedMessages Message[] @relation("Recipient")
+}
+
+model Listing {
+  id            String      @id @default(cuid())
+  title         String
+  description   String
+  type          ListingType
+  price         Float
+  city          String
+  neighborhood  String      @default("")
+  address       String      @default("")
+  bedrooms      Int         @default(0)
+  bathrooms     Int         @default(1)
+  size          Float?
+  furnished     Boolean     @default(false)
+  amenities     String[]
+  images        String[]
+  available     Boolean     @default(true)
+  availableFrom DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  owner    User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId  String
+  messages Message[]
+
+  @@index([city])
+  @@index([price])
+  @@index([available])
+  @@index([createdAt])
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  body      String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing     Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listingId   String
+
+  sender      User    @relation("Sender", fields: [senderId], references: [id], onDelete: Cascade)
+  senderId    String
+
+  recipient   User    @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  recipientId String
+
+  @@index([recipientId, read])
+  @@index([senderId])
+}

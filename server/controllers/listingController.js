@@ -1,54 +1,51 @@
 import { validationResult } from "express-validator";
-import Listing from "../models/Listing.js";
+import prisma from "../lib/prisma.js";
 
-function buildQuery(params) {
+const SORT_MAP = {
+  newest: { createdAt: "desc" },
+  oldest: { createdAt: "asc" },
+  price_asc: { price: "asc" },
+  price_desc: { price: "desc" },
+};
+
+function buildWhere(params) {
   const { city, type, furnished, minPrice, maxPrice, bedrooms, minBedrooms } = params;
-  const query = { available: true };
+  const where = { available: true };
 
-  if (city) query["location.city"] = { $regex: city, $options: "i" };
-  if (type) query.type = type;
-  if (furnished !== undefined) query.furnished = furnished === "true";
+  if (city) where.city = { contains: city, mode: "insensitive" };
+  if (type) where.type = type.toUpperCase();
+  if (furnished !== undefined) where.furnished = furnished === "true";
   if (minPrice || maxPrice) {
-    query.price = {};
-    if (minPrice) query.price.$gte = parseFloat(minPrice);
-    if (maxPrice) query.price.$lte = parseFloat(maxPrice);
+    where.price = {};
+    if (minPrice) where.price.gte = parseFloat(minPrice);
+    if (maxPrice) where.price.lte = parseFloat(maxPrice);
   }
   if (bedrooms !== undefined && bedrooms !== "") {
-    query.bedrooms = parseInt(bedrooms);
+    where.bedrooms = parseInt(bedrooms);
   } else if (minBedrooms) {
-    query.bedrooms = { $gte: parseInt(minBedrooms) };
+    where.bedrooms = { gte: parseInt(minBedrooms) };
   }
 
-  return query;
+  return where;
 }
+
+const ownerSelect = { id: true, name: true, email: true, avatar: true };
 
 export async function getListings(req, res) {
   try {
     const { page = 1, limit = 9, sort = "newest" } = req.query;
-    const query = buildQuery(req.query);
+    const where = buildWhere(req.query);
     const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    const sortMap = {
-      newest: { createdAt: -1 },
-      oldest: { createdAt: 1 },
-      price_asc: { price: 1 },
-      price_desc: { price: -1 },
-    };
-    const sortObj = sortMap[sort] || sortMap.newest;
+    const orderBy = SORT_MAP[sort] || SORT_MAP.newest;
 
     const [listings, total] = await Promise.all([
-      Listing.find(query).sort(sortObj).skip(skip).limit(parseInt(limit)).populate("owner", "name email avatar").lean(),
-      Listing.countDocuments(query),
+      prisma.listing.findMany({ where, orderBy, skip, take: parseInt(limit), include: { owner: { select: ownerSelect } } }),
+      prisma.listing.count({ where }),
     ]);
 
     return res.json({
       listings,
-      pagination: {
-        total,
-        page: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit)),
-        limit: parseInt(limit),
-      },
+      pagination: { total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)), limit: parseInt(limit) },
     });
   } catch {
     return res.status(500).json({ message: "Server error" });
@@ -57,47 +54,67 @@ export async function getListings(req, res) {
 
 export async function getListingById(req, res) {
   try {
-    const listing = await Listing.findById(req.params.id).populate("owner", "name email avatar");
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id },
+      include: { owner: { select: ownerSelect } },
+    });
     if (!listing) return res.status(404).json({ message: "Listing not found" });
     return res.json({ listing });
-  } catch (err) {
-    if (err.name === "CastError") return res.status(400).json({ message: "Invalid listing ID" });
+  } catch {
     return res.status(500).json({ message: "Server error" });
   }
 }
 
 export async function createListing(req, res) {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(422).json({ errors: errors.array() });
-  }
+  if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
+
+  const { title, description, type, price, location, bedrooms, bathrooms, size, furnished, amenities, images } = req.body;
   try {
-    const listing = await Listing.create({ ...req.body, owner: req.user._id });
-    await listing.populate("owner", "name email avatar");
+    const listing = await prisma.listing.create({
+      data: {
+        title,
+        description,
+        type: type.toUpperCase(),
+        price: parseFloat(price),
+        city: location?.city || req.body.city,
+        neighborhood: location?.neighborhood || req.body.neighborhood || "",
+        address: location?.address || req.body.address || "",
+        bedrooms: parseInt(bedrooms) || 0,
+        bathrooms: parseInt(bathrooms) || 1,
+        size: size ? parseFloat(size) : null,
+        furnished: Boolean(furnished),
+        amenities: amenities || [],
+        images: images || [],
+        ownerId: req.user.id,
+      },
+      include: { owner: { select: ownerSelect } },
+    });
     return res.status(201).json({ listing });
-  } catch {
+  } catch (err) {
+    console.error(err);
     return res.status(500).json({ message: "Server error" });
   }
 }
 
 export async function deleteListing(req, res) {
   try {
-    const listing = await Listing.findById(req.params.id);
+    const listing = await prisma.listing.findUnique({ where: { id: req.params.id } });
     if (!listing) return res.status(404).json({ message: "Listing not found" });
-    if (listing.owner.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-    await listing.deleteOne();
+    if (listing.ownerId !== req.user.id) return res.status(403).json({ message: "Not authorized" });
+    await prisma.listing.delete({ where: { id: req.params.id } });
     return res.json({ message: "Listing deleted" });
-  } catch (err) {
-    if (err.name === "CastError") return res.status(400).json({ message: "Invalid listing ID" });
+  } catch {
     return res.status(500).json({ message: "Server error" });
   }
 }
 
 export async function getMyListings(req, res) {
   try {
-    const listings = await Listing.find({ owner: req.user._id }).sort({ createdAt: -1 }).lean();
+    const listings = await prisma.listing.findMany({
+      where: { ownerId: req.user.id },
+      orderBy: { createdAt: "desc" },
+    });
     return res.json({ listings });
   } catch {
     return res.status(500).json({ message: "Server error" });
